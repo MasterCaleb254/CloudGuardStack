@@ -1,0 +1,95 @@
+policies:
+  - name: enforce-s3-encryption
+    description: Ensure all S3 buckets have server-side encryption enabled
+    resource: aws.s3
+    filters:
+      - type: value
+        key: ServerSideEncryptionConfiguration
+        value: absent
+    actions:
+      - type: set-encryption
+        crypto: aws:kms
+        key: "alias/aws/s3"
+
+  - name: audit-public-s3-buckets
+    description: Identify publicly accessible S3 buckets
+    resource: aws.s3
+    filters:
+      - type: bucket-policy
+        key: "length(Statement[?Effect=='Allow' && !Principal.AWS])"
+        value: not-null
+    actions:
+      - type: notify
+        template: default.html
+        subject: "Public S3 Bucket Detected - {{ account }} - {{ Bucket }}"
+        violation_desc: "S3 bucket has a bucket policy that allows public access"
+        action_desc: "Review and modify the bucket policy to restrict public access"
+        to:
+          - security-team@your-org.com
+
+  - name: require-mfa-for-iam-users
+    description: Ensure MFA is enabled for all IAM users with console access
+    resource: aws.iam-user
+    filters:
+      - type: mfa-device
+        value: absent
+      - "tag:MFA_Exempt": absent
+    actions:
+      - type: remove-keys
+        disable: true
+      - type: notify
+        template: default.html
+        subject: "MFA Not Enabled - {{ UserName }}"
+        violation_desc: "IAM user does not have MFA enabled"
+        action_desc: "Enable MFA for this IAM user or add MFA_Exempt tag if appropriate"
+        to:
+          - security-team@your-org.com
+
+  - name: audit-security-groups
+    description: Audit security groups for overly permissive rules
+    resource: aws.security-group
+    filters:
+      - or:
+        - type: ingress
+          Cidr:
+            value: "0.0.0.0/0"
+            op: in
+          Ports: [22, 3389, 3306, 5432]
+    actions:
+      - type: notify
+        template: default.html
+        subject: "Overly Permissive Security Group - {{ GroupName }}"
+        violation_desc: "Security group allows inbound traffic from the internet to sensitive ports"
+        action_desc: "Review and restrict the security group rules to specific IP ranges"
+        to:
+          - security-team@your-org.com
+
+  - name: enable-guardduty
+    description: Ensure AWS GuardDuty is enabled in all regions
+    resource: aws.guardduty-detector
+    filters:
+      - "Status": "DISABLED"
+    actions:
+      - type: enable
+      - type: update
+        FindingPublishingFrequency: "SIX_HOURS"
+        DataSources:
+          S3Logs:
+            Enable: true
+          DNSLogs:
+            Enable: true
+          FlowLogs:
+            Enable: true
+
+  - name: enforce-tagging
+    description: Ensure EC2 instances have required tags
+    resource: aws.ec2
+    filters:
+      - "tag:Environment": empty
+      - "tag:Owner": empty
+    actions:
+      - type: tag
+        tags:
+          Environment: "Unassigned"
+          Owner: "Unassigned"
+        propagate: true

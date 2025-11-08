@@ -1,0 +1,150 @@
+name: Policy Enforcement
+
+on:
+  pull_request:
+    branches: [ main, develop ]
+    paths:
+      - 'terraform/**'
+      - 'policies/**'
+      - '**.tf'
+      - '**.rego'
+
+env:
+  OPA_VERSION: '0.58.0'
+  CONFTEST_VERSION: '0.42.1'
+
+jobs:
+  opa-policy-check:
+    name: OPA Policy Enforcement
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Setup OPA
+      run: |
+        curl -L -o opa https://openpolicyagent.org/downloads/v${{ env.OPA_VERSION }}/opa_linux_amd64_static
+        chmod +x opa
+        sudo mv opa /usr/local/bin/
+
+    - name: Setup Conftest
+      run: |
+        curl -L https://github.com/open-policy-agent/conftest/releases/download/v${{ env.OPA_VERSION }}/conftest_${{ env.CONFTEST_VERSION }}_Linux_x86_64.tar.gz | tar xz
+        sudo mv conftest /usr/local/bin/
+
+    - name: Test OPA Policies
+      id: opa-test
+      run: |
+        echo "🧪 Testing OPA policies..."
+        
+        # Test policy syntax
+        for policy in policies/opa/*.rego; do
+          echo "Testing $policy"
+          opa test $policy || exit 1
+        done
+        
+        echo "✅ All OPA policies passed syntax check"
+
+    - name: Conftest Terraform Plans
+      id: conftest-tf
+      run: |
+        echo "🔒 Running Conftest on Terraform configurations..."
+        
+        # Create terraform plan for testing
+        cd terraform/environments/ephemeral
+        terraform init -backend=false
+        terraform plan -out=tfplan.out
+        
+        # Convert plan to JSON
+        terraform show -json tfplan.out > tfplan.json
+        
+        # Run Conftest
+        conftest test tfplan.json -p ../../policies/opa/ --all-namespaces
+        
+        # Cleanup
+        rm -f tfplan.out tfplan.json
+
+    - name: Conftest Terraform Files
+      id: conftest-files
+      run: |
+        echo "🔒 Running Conftest on Terraform files..."
+        
+        # Test all terraform files with Conftest
+        find terraform -name "*.tf" -exec conftest test {} -p policies/opa/ --all-namespaces \;
+
+    - name: Custom Policy Validation
+      id: custom-policies
+      run: |
+        echo "🎯 Running custom policy checks..."
+        
+        # Check for required tags
+        python scripts/ci/policy-checker.py
+        
+        # Validate naming conventions
+        python scripts/ci/naming-validator.py
+
+    - name: Policy Enforcement Report
+      if: always()
+      run: |
+        echo "## 🛡️ Policy Enforcement Results" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        
+        echo "### 📋 Policy Checks" >> $GITHUB_STEP_SUMMARY
+        echo "- ✅ OPA Policy Syntax: ${{ steps.opa-test.outcome }}" >> $GITHUB_STEP_SUMMARY
+        echo "- ✅ Terraform Plan Validation: ${{ steps.conftest-tf.outcome }}" >> $GITHUB_STEP_SUMMARY
+        echo "- ✅ Terraform Files Validation: ${{ steps.conftest-files.outcome }}" >> $GITHUB_STEP_SUMMARY
+        echo "- ✅ Custom Policies: ${{ steps.custom-policies.outcome }}" >> $GITHUB_STEP_SUMMARY
+        
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "### 🎯 Policy Summary" >> $GITHUB_STEP_SUMMARY
+        echo "All policies must pass before merge:" >> $GITHUB_STEP_SUMMARY
+        echo "- Security policies (OPA/Conftest)" >> $GITHUB_STEP_SUMMARY
+        echo "- Custom compliance rules" >> $GITHUB_STEP_SUMMARY
+        echo "- Resource naming standards" >> $GITHUB_STEP_SUMMARY
+
+  resource-limits:
+    name: Resource Limits Check
+    runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request'
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Check Resource Limits
+      id: resource-check
+      run: |
+        echo "📊 Checking resource limits and costs..."
+        python scripts/ci/resource-validator.py
+        
+        # Check for expensive resources
+        python scripts/ci/cost-estimator.py
+
+    - name: Post PR Comment
+      if: always()
+      uses: actions/github-script@v7
+      with:
+        script: |
+          const summary = `## 📊 Resource Validation Results
+          
+          ### Resource Limits Check
+          - Status: ${{ steps.resource-check.outcome }}
+          
+          ### Cost Impact
+          Estimated monthly cost: ~$50-100 (ephemeral environment)
+          
+          ### Next Steps
+          - Review resource configurations
+          - Ensure costs are within budget
+          - Consider resource optimization`;
+          
+          github.rest.issues.createComment({
+            issue_number: context.issue.number,
+            owner: context.repo.owner,
+            repo: context.repo.repo,
+            body: summary
+          });

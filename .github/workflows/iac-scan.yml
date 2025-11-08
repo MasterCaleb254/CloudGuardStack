@@ -1,0 +1,161 @@
+name: Infrastructure as Code Security Scan
+
+on:
+  push:
+    branches: [ main, develop ]
+    paths:
+      - 'terraform/**'
+      - '**.tf'
+      - '**.tfvars'
+  pull_request:
+    branches: [ main ]
+    paths:
+      - 'terraform/**'
+      - '**.tf'
+      - '**.tfvars'
+
+env:
+  TERRAFORM_VERSION: '1.5.0'
+  TFSEC_VERSION: 'latest'
+  CHECKOV_VERSION: 'latest'
+
+jobs:
+  terraform-security-scan:
+    name: Terraform Security Scan
+    runs-on: ubuntu-latest
+    permissions:
+      security-events: write
+      contents: read
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Setup Terraform
+      uses: hashicorp/setup-terraform@v3
+      with:
+        terraform-version: ${{ env.TERRAFORM_VERSION }}
+
+    - name: Terraform Format Check
+      id: fmt
+      run: |
+        cd terraform
+        terraform fmt -check -recursive
+
+    - name: Terraform Init
+      id: init
+      run: |
+        cd terraform
+        terraform init -backend=false
+      continue-on-error: true
+
+    - name: Terraform Validate
+      id: validate
+      run: |
+        cd terraform
+        terraform validate
+      continue-on-error: true
+
+    - name: Run TFLint
+      id: tflint
+      run: |
+        # Install TFLint
+        curl -s https://raw.githubusercontent.com/terraform-linters/tflint/master/install_linux.sh | bash
+        
+        # Initialize TFLint with rules
+        cd terraform
+        tflint --init
+        tflint --format sarif --out tflint-results.sarif
+      continue-on-error: true
+
+    - name: Run Checkov
+      id: checkov
+      uses: bridgecrewio/checkov-action@master
+      with:
+        directory: terraform/
+        framework: terraform
+        output_format: sarif
+        output_file_path: checkov-results.sarif
+        soft_fail: true
+        skip_check:
+          - CKV_AWS_8  # Skip SageMaker notebook encryption
+          - CKV_AWS_27 # Skip SQS queue encryption
+          - CKV_AWS_115 # Skip LB logging
+
+    - name: Run tfsec
+      id: tfsec
+      uses: aquasecurity/tfsec-pr-commenter-action@v1.2.0
+      with:
+        terraform_working_dir: terraform/
+        soft_fail: true
+
+    - name: Upload SARIF results
+      uses: github/codeql-action/upload-sarif@v3
+      with:
+        sarif_file: terraform/checkov-results.sarif
+        wait-for-processing: true
+
+    - name: Upload TFLint results
+      uses: github/codeql-action/upload-sarif@v3
+      with:
+        sarif_file: terraform/tflint-results.sarif
+        wait-for-processing: true
+
+    - name: Security Scan Summary
+      if: always()
+      run: |
+        echo "## 🔒 Infrastructure Security Scan Results" >> $GITHUB_STEP_SUMMARY
+        echo "| Tool | Status | Findings |" >> $GITHUB_STEP_SUMMARY
+        echo "|------|--------|----------|" >> $GITHUB_STEP_SUMMARY
+        
+        # Checkov results
+        if [ -f "terraform/checkov-results.sarif" ]; then
+          CHECKOV_COUNT=$(jq '.runs[0].results | length' terraform/checkov-results.sarif)
+          echo "| Checkov | ✅ Completed | $CHECKOV_COUNT findings |" >> $GITHUB_STEP_SUMMARY
+        else
+          echo "| Checkov | ❌ Failed | N/A |" >> $GITHUB_STEP_SUMMARY
+        fi
+        
+        # TFLint results
+        if [ -f "terraform/tflint-results.sarif" ]; then
+          TFLINT_COUNT=$(jq '.runs[0].results | length' terraform/tflint-results.sarif)
+          echo "| TFLint | ✅ Completed | $TFLINT_COUNT findings |" >> $GITHUB_STEP_SUMMARY
+        else
+          echo "| TFLint | ❌ Failed | N/A |" >> $GITHUB_STEP_SUMMARY
+        fi
+        
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "### 📋 Next Steps" >> $GITHUB_STEP_SUMMARY
+        echo "- Review security findings in the Security tab" >> $GITHUB_STEP_SUMMARY
+        echo "- Address critical and high severity issues" >> $GITHUB_STEP_SUMMARY
+        echo "- Re-run scan after fixes" >> $GITHUB_STEP_SUMMARY
+
+  environment-scan:
+    name: Environment-specific Scan
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        environment: [ephemeral, production]
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Scan ${{ matrix.environment }} environment
+      run: |
+        echo "🔍 Scanning ${{ matrix.environment }} environment"
+        cd terraform/environments/${{ matrix.environment }}
+        
+        # Initialize and validate
+        terraform init -backend=false
+        terraform validate
+        
+        # Run security scan
+        checkov -d . --output sarif --output-file-path ../../checkov-${{ matrix.environment }}.sarif
+        
+        echo "✅ ${{ matrix.environment }} environment scan completed"
+
+    - name: Upload Environment SARIF
+      uses: github/codeql-action/upload-sarif@v3
+      with:
+        sarif_file: checkov-${{ matrix.environment }}.sarif

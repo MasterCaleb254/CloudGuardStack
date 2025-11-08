@@ -1,0 +1,203 @@
+image: python:3.9
+
+stages:
+  - test
+  - security
+  - deploy
+  - verify
+
+variables:
+  TERRAFORM_VERSION: "1.5.0"
+  AWS_DEFAULT_REGION: "us-east-1"
+  TF_DATA_DIR: "${CI_PROJECT_DIR}/.terraform"
+
+before_script:
+  - apt-get update -y
+  - apt-get install -y curl unzip git
+  - pip install --upgrade pip
+
+.terraform_setup: &terraform_setup
+  before_script:
+    - curl -fsSL https://apt.releases.hashicorp.com/gpg | apt-key add -
+    - apt-add-repository "deb [arch=amd64] https://apt.releases.hashicorp.com $(lsb_release -cs) main"
+    - apt-get update && apt-get install terraform=$TERRAFORM_VERSION
+    - terraform --version
+
+.security_tools: &security_tools
+  before_script:
+    - pip install checkov
+    - curl -s https://raw.githubusercontent.com/tfsec/tfsec/master/scripts/install_linux.sh | bash
+    - curl -L https://github.com/terraform-linters/tflint/releases/latest/download/tflint_linux_amd64.zip -o tflint.zip
+    - unzip tflint.zip && mv tflint /usr/local/bin/
+    - curl -L -o opa https://openpolicyagent.org/downloads/v0.58.0/opa_linux_amd64_static
+    - chmod +x opa && mv opa /usr/local/bin/
+
+iac_validate:
+  stage: test
+  image: hashicorp/terraform:$TERRAFORM_VERSION
+  script:
+    - cd terraform
+    - terraform init -backend=false
+    - terraform validate
+    - terraform fmt -check -recursive
+  rules:
+    - changes:
+        - terraform/**/*.tf
+        - terraform/**/*.tfvars
+
+security_scan:
+  stage: security
+  image: python:3.9
+  before_script:
+    - *security_tools
+  script:
+    - echo "🔒 Running security scans..."
+    
+    # Checkov scan
+    - checkov -d terraform/ --output sarif --output-file-path checkov-results.sarif
+    
+    # TFLint scan
+    - cd terraform && tflint --init
+    - tflint --format sarif --out tflint-results.sarif
+    
+    # TFSec scan
+    - tfsec ./terraform --format sarif --out tfsec-results.sarif
+    
+    # OPA policy tests
+    - opa test policies/opa/
+    
+    echo "✅ Security scans completed"
+  artifacts:
+    reports:
+      sarif:
+        - checkov-results.sarif
+        - tflint-results.sarif
+        - tfsec-results.sarif
+    paths:
+      - "*.sarif"
+    expire_in: 1 week
+  rules:
+    - changes:
+        - terraform/**/*
+        - policies/**/*
+
+policy_enforcement:
+  stage: security
+  image: python:3.9
+  before_script:
+    - *security_tools
+    - curl -L https://github.com/open-policy-agent/conftest/releases/download/v0.42.1/conftest_0.42.1_Linux_x86_64.tar.gz | tar xz
+    - mv conftest /usr/local/bin/
+  script:
+    - echo "🛡️ Enforcing policies..."
+    
+    # Test Terraform plans with Conftest
+    - cd terraform/environments/ephemeral
+    - terraform init -backend=false
+    - terraform plan -out=tfplan.out
+    - terraform show -json tfplan.out > tfplan.json
+    - conftest test tfplan.json -p ../../policies/opa/ --all-namespaces
+    
+    # Test individual Terraform files
+    - find ../.. -name "*.tf" -exec conftest test {} -p ../../policies/opa/ --all-namespaces \;
+    
+    echo "✅ Policy enforcement completed"
+  rules:
+    - changes:
+        - terraform/**/*
+        - policies/**/*
+
+deploy_ephemeral:
+  stage: deploy
+  image: hashicorp/terraform:$TERRAFORM_VERSION
+  environment:
+    name: ephemeral
+    action: start
+  before_script:
+    - *terraform_setup
+    - cd terraform/environments/ephemeral
+    - terraform init
+  script:
+    - terraform validate
+    - terraform plan -out=plan.out
+    - terraform apply -auto-approve plan.out
+  after_script:
+    - terraform output -json > terraform_output.json
+  artifacts:
+    paths:
+      - terraform/environments/ephemeral/terraform_output.json
+    expire_in: 1 week
+  rules:
+    - if: $CI_COMMIT_BRANCH == "main"
+      when: manual
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+
+deploy_verify:
+  stage: verify
+  image: python:3.9
+  dependencies:
+    - deploy_ephemeral
+  before_script:
+    - pip install boto3 azure-identity google-cloud-storage
+    - apt-get install -y jq
+  script:
+    - echo "🚀 Running post-deployment verification..."
+    
+    # Load Terraform outputs
+    - cd terraform/environments/ephemeral
+    - export TF_OUTPUTS=$(cat terraform_output.json)
+    
+    # Run security scans
+    - python ../../../scripts/ci/post-deploy-scanner.py
+    
+    # Run health checks
+    - python ../../../scripts/ci/health-checker.py
+    
+    # Run connectivity tests
+    - python ../../../scripts/ci/connectivity-tester.py
+    
+    echo "✅ Deployment verification completed"
+  artifacts:
+    reports:
+      junit: reports/verify-*.xml
+    paths:
+      - reports/
+    expire_in: 1 week
+
+telemetry_test:
+  stage: verify
+  image: python:3.9
+  needs: ["deploy_verify"]
+  script:
+    - echo "📊 Testing telemetry and monitoring..."
+    
+    # Start SIEM and test log ingestion
+    - docker-compose -f siem/docker-compose.yml up -d
+    - sleep 30  # Wait for services to start
+    
+    # Generate test data and verify ingestion
+    - python scripts/ci/telemetry-tester.py
+    
+    # Verify monitoring alerts
+    - python scripts/ci/monitoring-verifier.py
+    
+    echo "✅ Telemetry tests completed"
+  after_script:
+    - docker-compose -f siem/docker-compose.yml down
+
+cleanup_ephemeral:
+  stage: .post
+  image: hashicorp/terraform:$TERRAFORM_VERSION
+  environment:
+    name: ephemeral
+    action: stop
+  before_script:
+    - *terraform_setup
+    - cd terraform/environments/ephemeral
+    - terraform init
+  script:
+    - terraform destroy -auto-approve
+  when: manual
+  rules:
+    - if: $CI_COMMIT_BRANCH == "main"
+      when: manual

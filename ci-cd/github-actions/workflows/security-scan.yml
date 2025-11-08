@@ -1,0 +1,62 @@
+name: Security Scanning
+
+on:
+  schedule:
+    - cron: '0 6 * * 1'  # Run every Monday at 6 AM
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  dependency-scan:
+    name: Dependency Security Scan
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.9'
+
+      - name: Install safety
+        run: pip install safety
+
+      - name: Scan Python dependencies
+        run: safety check --json --output safety-report.json || true
+
+      - name: Upload security report
+        uses: actions/upload-artifact@v3
+        with:
+          name: safety-report
+          path: safety-report.json
+
+  code-scan:
+    name: Code Security Scan
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+
+      - name: Run Gitleaks
+        uses: gitleaks/gitleaks-action@v2
+        with:
+          config-path: .gitleaks.toml
+
+  container-scan:
+    name: Container Security Scan
+    runs-on: ubuntu-latest
+    if: false  # Disabled by default, enable when Dockerfiles are added
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+
+      - name: Run Trivy
+        uses: aquasecurity/trivy-action@master
+        with:
+          scan-type: 'fs'
+          scan-ref: '.'
+          format: 'sarif'
+          output: 'trivy-results.sarif'

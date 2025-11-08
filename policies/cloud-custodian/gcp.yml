@@ -1,0 +1,66 @@
+policies:
+  - name: enforce-bucket-policy
+    description: Ensure all GCS buckets have uniform bucket-level access enabled
+    resource: gcp.bucket
+    filters:
+      - iamConfiguration.uniformBucketLevelAccess.enabled: false
+    actions:
+      - type: set-bucket-iam
+        enabled: true
+
+  - name: require-vpc-service-controls
+    description: Ensure VPC Service Controls are enabled for sensitive projects
+    resource: gcp.project
+    filters:
+      - type: iam-policy
+        key: iamPolicy.bindings[].role
+        op: not-in
+        value: 
+          - "roles/accesscontextmanager.policyAdmin"
+          - "roles/accesscontextmanager.policyEditor"
+    actions:
+      - type: notify
+        template: default.html
+        priority_header: '2'
+        subject: "VPC Service Controls Required - Project: {{ name }}"
+        violation_desc: "VPC Service Controls are not properly configured for this project"
+        action_desc: "Please enable VPC Service Controls for this project"
+        to:
+          - security-team@your-org.com
+
+  - name: audit-public-ip-addresses
+    description: Audit instances with public IP addresses
+    resource: gcp.instance
+    filters:
+      - networkInterfaces[].accessConfigs[].natIP: present
+    actions:
+      - type: notify
+        template: default.html
+        subject: "Instance with Public IP Found - {{ name }}"
+        violation_desc: "Instance has a public IP address"
+        action_desc: "Review if public IP is required, otherwise remove it"
+        to:
+          - security-team@your-org.com
+
+  - name: require-sql-ssl
+    description: Ensure SSL is required for all Cloud SQL instances
+    resource: gcp.sql-instance
+    filters:
+      - settings.ipConfiguration.requireSsl: false
+    actions:
+      - type: set-ssl
+        require_ssl: true
+
+  - name: enforce-logging
+    description: Ensure logging is enabled for all projects
+    resource: gcp.project
+    filters:
+      - type: log-metric
+        key: "logging.logMetrics[].filter"
+        value: "resource.type=*"
+        op: not-in
+    actions:
+      - type: set-log-metric
+        name: "audit-logs"
+        filter: "resource.type=*"
+        description: "Audit logs for all resources"

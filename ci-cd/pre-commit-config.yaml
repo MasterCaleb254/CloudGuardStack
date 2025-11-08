@@ -1,0 +1,26 @@
+# This is a CI/CD specific pre-commit config that can be used in pipelines
+repos:
+  - repo: local
+    hooks:
+      - id: terraform-validate
+        name: terraform validate
+        entry: terraform
+        args: [validate]
+        language: system
+        pass_filenames: false
+        files: \.tf$
+
+      - id: terraform-fmt
+        name: terraform fmt
+        entry: terraform
+        args: [fmt, -check, -recursive]
+        language: system
+        pass_filenames: false
+        files: \.tf$
+
+      - id: python-tests
+        name: python tests
+        entry: pytest
+        args: [tests/, -v]
+        language: system
+        pass_filenames: false

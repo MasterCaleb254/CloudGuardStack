@@ -1,0 +1,43 @@
+name: Verify Setup
+on:
+  pull_request:
+    branches: [ main ]
+  push:
+    branches: [ main ]
+
+jobs:
+  verify-setup:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3
+      
+      - name: Setup Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.9'
+          
+      - name: Install tools
+        run: |
+          chmod +x scripts/setup/install-tools.sh
+          ./scripts/setup/install-tools.sh
+          
+      - name: Verify setup
+        run: |
+          chmod +x scripts/setup/verify-setup.sh
+          ./scripts/setup/verify-setup.sh
+          
+      - name: Check Python environment
+        run: |
+          chmod +x scripts/setup/setup-python-env.sh
+          ./scripts/setup/setup-python-env.sh
+          
+      - name: Validate Terraform
+        run: |
+          cd terraform
+          terraform validate
+          
+      - name: Check code quality
+        run: |
+          source .venv/bin/activate
+          black --check .
+          flake8 scanners/ tests/

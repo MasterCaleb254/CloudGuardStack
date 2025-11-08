@@ -1,0 +1,75 @@
+policies:
+  - name: enforce-storage-https
+    description: Ensure secure transfer to storage accounts is enabled
+    resource: azure.storage
+    filters:
+      - type: value
+        key: properties.supportsHttpsTrafficOnly
+        value: false
+    actions:
+      - type: set-properties
+        properties:
+          supportsHttpsTrafficOnly: true
+
+  - name: audit-nsg-open-rdp
+    description: Audit Network Security Groups for open RDP access from the internet
+    resource: azure.networksecuritygroup
+    filters:
+      - type: ingress
+        from_port: 3389
+        ip_protocol: tcp
+        cidr: "0.0.0.0/0"
+    actions:
+      - type: notify
+        template: default.html
+        subject: "Open RDP Port Found - {{ name }}"
+        violation_desc: "Network Security Group allows RDP access from the internet"
+        action_desc: "Review and restrict RDP access to specific IP ranges"
+        to:
+          - security-team@your-org.com
+
+  - name: require-sql-tls-encryption
+    description: Ensure SQL servers require secure TLS connections
+    resource: azure.sql-server
+    filters:
+      - type: value
+        key: properties.minimalTlsVersion
+        op: not-equal
+        value: "1.2"
+    actions:
+      - type: update
+        set-properties:
+          minimalTlsVersion: "1.2"
+
+  - name: monitor-activity-logs
+    description: Ensure Activity Log Alerts exist for critical operations
+    resource: azure.logprofile
+    filters:
+      - type: value
+        key: properties.categories
+        op: not-in
+        value: 
+          - "Write"
+          - "Delete"
+          - "Action"
+    actions:
+      - type: notify
+        template: default.html
+        subject: "Insufficient Logging Configuration - {{ name }}"
+        violation_desc: "Log profile is not configured to capture all critical operations"
+        action_desc: "Update log profile to include Write, Delete, and Action categories"
+        to:
+          - security-team@your-org.com
+
+  - name: enforce-tagging
+    description: Ensure resources have required tags
+    resource: azure.resourcegroup
+    filters:
+      - "tag:Environment": empty
+      - "tag:Owner": empty
+    actions:
+      - type: tag
+        tags:
+          Environment: "Unassigned"
+          Owner: "Unassigned"
+        state: present
