@@ -1,3 +1,4 @@
+<<<<<<< HEAD
 # **CloudGuardStack 🛡️**
 
 [![Python Version](https://img.shields.io/badge/python-3.8%2B-blue.svg)](https://www.python.org/downloads/)
@@ -158,3 +159,7 @@ MIT License. Check the `LICENSE` file.
 ---
 
 Made with ❤️ for engineers who secure clouds, not just run them.
+=======
+# CloudGuardStack
+A real-time cloud threat intelligence platform that turns your terminal into a security command center. Visualize IAM exposure, storage risks, and misconfigurations across multi-cloud setups — then auto-remediate before anything pops off.
+>>>>>>> origin/main
