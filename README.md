@@ -163,3 +163,4 @@ Made with ❤️ for engineers who secure clouds, not just run them.
 # CloudGuardStack
 A real-time cloud threat intelligence platform that turns your terminal into a security command center. Visualize IAM exposure, storage risks, and misconfigurations across multi-cloud setups — then auto-remediate before anything pops off.
 >>>>>>> origin/main
+>>>>>> video link showing the tool in action https://youtu.be/z-oLVsTfm2g
